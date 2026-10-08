@@ -13,7 +13,7 @@ import {
 } from "../firebase/gameService";
 import { useConfetti, useSoundEffects } from "../hooks/useGameEffects";
 import Confetti from "../components/Confetti";
-import { Star, Tiles, Avatar, TimerBar, Podium } from "../components/ui";
+import { Star, Tiles, Avatar, TimerBar, Podium, RestList } from "../components/ui";
 
 const byScore = (a, b) => b.score - a.score || a.joinedAt - b.joinedAt;
 
@@ -341,8 +341,9 @@ export default function PlayerPage({ roomCode: initialRoomCode }) {
             </p>
           )}
           <Podium players={players} selfId={playerId} />
-          <a className="btn btn-ghost" href={window.location.pathname}>
-            Về trang chủ
+          <RestList players={players} selfId={playerId} />
+          <a className="btn btn-ghost btn-block" href={window.location.pathname}>
+            ← Về trang chủ
           </a>
         </div>
       )}

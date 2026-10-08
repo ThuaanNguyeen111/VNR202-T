@@ -106,3 +106,27 @@ export function RankMove({ prevRanks, id, index }) {
   if (diff < 0) return <span className="move down" title={`Giảm ${-diff} hạng`}>▼{-diff}</span>;
   return <span className="move same" aria-label="Giữ hạng">–</span>;
 }
+
+/** Danh sách từ hạng 4 trở xuống, hiện đầy đủ mọi người chơi */
+export function RestList({ players, selfId }) {
+  const rest = players.slice(3);
+  if (rest.length === 0) return null;
+  return (
+    <section className="rest">
+      <h2 className="rest-title">Các vị trí tiếp theo</h2>
+      <ol className="rest-list">
+        {rest.map((p, i) => (
+          <li key={p.id} className={p.id === selfId ? "is-self" : ""}>
+            <span className="rank-n">{i + 4}</span>
+            <Avatar player={p} size={28} />
+            <span className="rank-name">
+              {p.name}
+              {p.id === selfId ? " (bạn)" : ""}
+            </span>
+            <span className="rank-score">{p.score}</span>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}

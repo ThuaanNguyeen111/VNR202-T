@@ -24,6 +24,7 @@ import {
   TimerBar,
   Podium,
   RankMove,
+  RestList,
 } from "../components/ui";
 
 const byScore = (a, b) => b.score - a.score || a.joinedAt - b.joinedAt;
@@ -425,19 +426,17 @@ export default function HostPage() {
       {phase === "finished" && (
         <div className="final">
           <h1 className="display final-title">Chung cuộc</h1>
+          <p className="final-sub">{leaderboard.length} người tham gia</p>
           <Podium players={leaderboard} />
-          {leaderboard.length > 3 && (
-            <ol className="ranks ranks-rest" start={4}>
-              {leaderboard.slice(3, 12).map((p, i) => (
-                <li key={p.id}>
-                  <span className="rank-n">{i + 4}</span>
-                  <Avatar player={p} size={28} />
-                  <span className="rank-name">{p.name}</span>
-                  <span className="rank-score">{p.score}</span>
-                </li>
-              ))}
-            </ol>
-          )}
+          <RestList players={leaderboard} />
+          <div className="final-actions">
+            <a className="btn btn-ghost" href={window.location.pathname}>
+              ← Về trang chủ
+            </a>
+            <a className="btn btn-red" href={`${window.location.pathname}?mode=host`}>
+              Mở phòng mới
+            </a>
+          </div>
         </div>
       )}
     </main>

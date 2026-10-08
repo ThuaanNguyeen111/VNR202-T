@@ -349,7 +349,18 @@ svg { flex-shrink: 0; }
   display: flex; flex-direction: column; align-items: center; gap: 2rem;
 }
 .final-title { font-size: clamp(3rem, 7vw, 6rem); color: var(--red); }
-.ranks-rest { width: min(560px, 100%); }
+.final-sub { font-weight: 700; color: var(--muted); margin-top: -1.25rem; }
+.final-actions { display: flex; gap: 1rem; flex-wrap: wrap; justify-content: center; }
+.final-actions .btn { text-decoration: none; min-width: 200px; }
+
+.rest { width: min(1100px, 100%); display: grid; gap: 0.75rem; }
+.rest-title { font-family: var(--display); font-weight: 400; font-size: 1.6rem; text-transform: uppercase; text-align: left; }
+.rest-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 0.5rem; }
+.rest-list li {
+  display: flex; align-items: center; gap: 0.6rem;
+  padding: 0.45rem 0.7rem; border: 2px solid var(--ink); background: var(--paper-2);
+}
+.rest-list li.is-self { background: var(--gold); }
 
 .podium { display: flex; align-items: flex-end; justify-content: center; gap: 0.75rem; width: min(720px, 100%); }
 .podium-col { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 0.4rem; text-align: center; min-width: 0; }
@@ -435,6 +446,9 @@ svg { flex-shrink: 0; }
 .p-final-me { font-weight: 600; font-size: 1.1rem; }
 .p-final-me strong { font-family: var(--display); font-weight: 400; font-size: 1.6rem; }
 .p-final .podium-block { font-size: 2rem; }
+.p-final .rest { text-align: left; }
+.p-final .rest-list { grid-template-columns: 1fr; }
+.p-final > .btn { text-decoration: none; }
 .p-final .place-1 .podium-block { height: 130px; }
 .p-final .place-2 .podium-block { height: 95px; }
 .p-final .place-3 .podium-block { height: 70px; }
