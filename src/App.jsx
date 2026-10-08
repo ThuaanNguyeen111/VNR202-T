@@ -15,7 +15,7 @@ function getRoute() {
   const room = params.get("room");
 
   if (mode === "host") return { page: "host" };
-  if (room) return { page: "player", roomCode: room.toUpperCase() };
+  if (room) return { page: "player", roomCode: room.replace(/\D/g, "").slice(0, 6) };
   return { page: "home" };
 }
 

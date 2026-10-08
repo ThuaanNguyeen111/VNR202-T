@@ -1,6 +1,9 @@
-import { useState, useEffect, useCallback, useRef } from "react";
-import { quizData } from "../data/quizData";
+import { useState, useEffect, useRef } from "react";
+import QRCode from "qrcode";
+import { quizData, LETTERS } from "../data/quizData";
 import {
+  TIME_LIMIT,
+  now,
   createRoom,
   startGame,
   revealAnswer,
@@ -14,582 +17,429 @@ import {
 import { useConfetti, useSoundEffects } from "../hooks/useGameEffects";
 import Confetti from "../components/Confetti";
 import AudioController from "../components/AudioController";
-import "./HostPage.css";
+import {
+  Star,
+  Tiles,
+  Avatar,
+  TimerBar,
+  Podium,
+  RankMove,
+} from "../components/ui";
 
-const TIME_LIMIT = 60;
-
-const DIFFICULTY_COLOR = {
-  Dễ: "#34d399",
-  "Trung bình": "#fbbf24",
-  Khó: "#f87171",
-};
+const byScore = (a, b) => b.score - a.score || a.joinedAt - b.joinedAt;
 
 export default function HostPage() {
   const [phase, setPhase] = useState("creating"); // creating|lobby|question|reveal|finished
   const [roomCode, setRoomCode] = useState("");
-  const [players, setPlayers] = useState([]);
   const [room, setRoom] = useState(null);
+  const [players, setPlayers] = useState([]);
   const [answers, setAnswers] = useState({});
-  const [timeLeft, setTimeLeft] = useState(TIME_LIMIT);
   const [currentQ, setCurrentQ] = useState(0);
+  const [timeLeft, setTimeLeft] = useState(TIME_LIMIT);
+  const [prevRanks, setPrevRanks] = useState(null);
   const [error, setError] = useState("");
+  const [qrUrl, setQrUrl] = useState("");
 
-  const timerRef = useRef(null);
-  const unsubRoomRef = useRef(null);
-  const unsubPlayersRef = useRef(null);
-  const unsubAnswersRef = useRef(null);
   const roomCodeRef = useRef("");
+  const phaseRef = useRef(phase);
+  const currentQRef = useRef(0);
+  const revealingRef = useRef(false);
+  const playersRef = useRef([]);
 
   const { particles, triggerConfetti } = useConfetti();
   const { playSound } = useSoundEffects();
 
-  // ── Init room ────────────────────────────────────────────────────────────
   useEffect(() => {
-    let code = "";
+    phaseRef.current = phase;
+    currentQRef.current = currentQ;
+    playersRef.current = players;
+  }, [phase, currentQ, players]);
 
-    async function init() {
+  // ── Tạo phòng ────────────────────────────────────────────────────────────
+  useEffect(() => {
+    let unsubRoom, unsubPlayers;
+    let cancelled = false;
+    (async () => {
       try {
-        code = await createRoom(quizData.length);
+        const code = await createRoom(quizData.length);
+        if (cancelled) {
+          deleteRoom(code);
+          return;
+        }
         roomCodeRef.current = code;
         setRoomCode(code);
         setPhase("lobby");
-
-        // Listen room state
-        unsubRoomRef.current = listenRoom(code, (data) => {
-          if (data) setRoom(data);
-        });
-
-        // Listen players
-        unsubPlayersRef.current = listenPlayers(code, (pList) => {
-          setPlayers(pList.sort((a, b) => b.score - a.score));
-        });
+        unsubRoom = listenRoom(code, (d) => d && setRoom(d));
+        unsubPlayers = listenPlayers(code, (list) => setPlayers(list.sort(byScore)));
       } catch (e) {
-        setError("Lỗi kết nối Firebase. Kiểm tra lại config.");
         console.error(e);
+        setError(
+          "Không kết nối được Firebase. Kiểm tra file .env và Rules của Realtime Database (phải cho phép đọc/ghi)."
+        );
       }
-    }
-
-    init();
-
-    return () => {
-      unsubRoomRef.current?.();
-      unsubPlayersRef.current?.();
-      unsubAnswersRef.current?.();
+    })();
+    const cleanup = () => {
       if (roomCodeRef.current) deleteRoom(roomCodeRef.current);
+    };
+    window.addEventListener("beforeunload", cleanup);
+    return () => {
+      cancelled = true;
+      unsubRoom?.();
+      unsubPlayers?.();
+      window.removeEventListener("beforeunload", cleanup);
+      cleanup();
     };
   }, []);
 
-  // ── Listen answers when question changes ─────────────────────────────────
+  // ── Mã QR (tạo ngay trên máy, không cần mạng) ───────────────────────────
   useEffect(() => {
-    if (!roomCode || phase !== "question") return;
-    unsubAnswersRef.current?.();
-    unsubAnswersRef.current = listenAnswers(roomCode, currentQ, (ans) => {
-      setAnswers(ans);
-    });
+    if (!roomCode) return;
+    const url = `${window.location.origin}${window.location.pathname}?room=${roomCode}`;
+    QRCode.toDataURL(url, { width: 520, margin: 0, color: { dark: "#161616", light: "#FFFDF7" } })
+      .then(setQrUrl)
+      .catch(() => setQrUrl(""));
+  }, [roomCode]);
+
+  // ── Nghe đáp án của câu hiện tại ────────────────────────────────────────
+  useEffect(() => {
+    if (!roomCode || (phase !== "question" && phase !== "reveal")) return;
+    return listenAnswers(roomCode, currentQ, setAnswers);
   }, [roomCode, currentQ, phase]);
 
-  // ── Countdown timer ──────────────────────────────────────────────────────
-  const stopTimer = useCallback(() => {
-    if (timerRef.current) clearInterval(timerRef.current);
-  }, []);
+  // ── Đồng hồ đếm ngược (theo giờ máy chủ) ─────────────────────────────────
+  useEffect(() => {
+    if (phase !== "question" || !room?.questionStartTime) return;
+    const tick = () => {
+      const left = Math.max(
+        0,
+        TIME_LIMIT - Math.floor((now() - room.questionStartTime) / 1000)
+      );
+      setTimeLeft(left);
+      if (left === 0) handleReveal();
+    };
+    tick();
+    const id = setInterval(tick, 250);
+    return () => clearInterval(id);
+  }, [phase, room?.questionStartTime]); // eslint-disable-line
 
-  const startTimer = useCallback(() => {
-    stopTimer();
-    setTimeLeft(TIME_LIMIT);
-    timerRef.current = setInterval(() => {
-      setTimeLeft((prev) => {
-        if (prev <= 1) {
-          stopTimer();
-          handleReveal();
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-  }, [roomCode, currentQ]); // eslint-disable-line
+  // ── Tất cả đã trả lời → tự hiện đáp án ──────────────────────────────────
+  const answeredCount = Object.keys(answers).length;
+  useEffect(() => {
+    if (phase !== "question" || players.length === 0) return;
+    if (answeredCount >= players.length) {
+      const id = setTimeout(handleReveal, 1200);
+      return () => clearTimeout(id);
+    }
+  }, [answeredCount, players.length, phase]); // eslint-disable-line
 
-  // ── Handle start game ────────────────────────────────────────────────────
+  const snapshotRanks = () => {
+    const map = {};
+    [...playersRef.current].sort(byScore).forEach((p, i) => (map[p.id] = i));
+    setPrevRanks(map);
+  };
+
+  // ── Điều khiển ──────────────────────────────────────────────────────────
   const handleStart = async () => {
     if (players.length === 0) return;
     playSound("click");
+    snapshotRanks();
+    setAnswers({});
+    setCurrentQ(0);
+    revealingRef.current = false;
     await startGame(roomCode);
     setPhase("question");
-    setCurrentQ(0);
-    setAnswers({});
-    startTimer();
   };
 
-  // ── Handle reveal ────────────────────────────────────────────────────────
-  const handleReveal = useCallback(async () => {
-    stopTimer();
-    const code = roomCodeRef.current;
-    if (!code) return;
-    const correct = quizData[currentQ].correct;
-    await revealAnswer(code, currentQ, correct);
+  async function handleReveal() {
+    if (phaseRef.current !== "question" || revealingRef.current) return;
+    revealingRef.current = true;
+    const q = currentQRef.current;
+    await revealAnswer(roomCodeRef.current, q, quizData[q].correct);
     setPhase("reveal");
     playSound("correct");
-  }, [currentQ, stopTimer, playSound]);
+  }
 
-  // ── Handle next ──────────────────────────────────────────────────────────
   const handleNext = async () => {
     playSound("click");
     const next = currentQ + 1;
     if (next >= quizData.length) {
       await endGame(roomCode);
       setPhase("finished");
-      triggerConfetti(120);
+      triggerConfetti(140);
       playSound("victory");
-    } else {
-      await nextQuestion(roomCode, next);
-      setCurrentQ(next);
-      setAnswers({});
-      setPhase("question");
-      startTimer();
+      return;
     }
+    snapshotRanks();
+    setAnswers({});
+    setCurrentQ(next);
+    revealingRef.current = false;
+    await nextQuestion(roomCode, next);
+    setPhase("question");
   };
 
-  // ── Helpers ──────────────────────────────────────────────────────────────
-  const answeredCount = Object.keys(answers).length;
-  const leaderboard = [...players].sort((a, b) => b.score - a.score);
+  // ── Dữ liệu hiển thị ────────────────────────────────────────────────────
+  const q = quizData[currentQ];
+  const leaderboard = [...players].sort(byScore);
+  const answerList = Object.values(answers);
+  const correctCount = answerList.filter((a) => a.isCorrect).length;
   const joinUrl = `${window.location.origin}${window.location.pathname}?room=${roomCode}`;
-  const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(joinUrl)}&bgcolor=0f172a&color=818cf8&margin=10`;
 
-  const timePercent = (timeLeft / TIME_LIMIT) * 100;
-  const timerColor =
-    timeLeft > 15 ? "#34d399" : timeLeft > 7 ? "#fbbf24" : "#f87171";
-
-  // ── Render ────────────────────────────────────────────────────────────────
+  // ── Render ──────────────────────────────────────────────────────────────
   if (error) {
     return (
-      <div className="host-error">
-        <div className="error-icon">⚠️</div>
-        <h2>Lỗi kết nối</h2>
-        <p>{error}</p>
-        <p className="error-hint">
-          Xem hướng dẫn trong file <code>src/firebase/config.js</code>
-        </p>
-      </div>
+      <main className="center-screen">
+        <div className="notice">
+          <h1>Chưa tạo được phòng</h1>
+          <p>{error}</p>
+          <button className="btn btn-ink" onClick={() => window.location.reload()}>
+            Thử lại
+          </button>
+          <a className="back-link" href={window.location.pathname}>
+            ← Trang chủ
+          </a>
+        </div>
+      </main>
     );
   }
 
   if (phase === "creating") {
     return (
-      <div className="host-loading">
-        <div className="loading-spinner" />
-        <p>Đang tạo phòng...</p>
-      </div>
+      <main className="center-screen">
+        <Star size={64} className="spin-star" />
+        <p className="muted">Đang tạo phòng…</p>
+      </main>
     );
   }
 
   return (
-    <div className="host-page">
+    <main className="host">
       <Confetti particles={particles} />
-
-      {/* Audio controller widget */}
-      <div className="host-audio-wrapper">
+      <div className="host-audio">
         <AudioController
-          isPlayingBgm={
-            phase === "lobby" || phase === "question" || phase === "reveal"
-          }
+          isPlayingBgm={phase === "lobby" || phase === "question" || phase === "reveal"}
           isPlayingVictory={phase === "finished"}
         />
       </div>
 
-      {/* ── LOBBY ── */}
+      {/* ── PHÒNG CHỜ ── */}
       {phase === "lobby" && (
-        <div className="lobby-screen">
-          <div className="lobby-header">
-            <div className="lobby-title-group">
-              <span className="lobby-badge">🏛️</span>
-              <h1 className="lobby-title">Trò Chơi Giải Mã Đáp Án</h1>
+        <div className="lobby">
+          <section className="lobby-join">
+            <a className="back-link back-link-light" href={window.location.pathname}>
+              ← Trang chủ
+            </a>
+            <p className="lobby-kicker">Quét mã QR hoặc vào trang và nhập mã phòng</p>
+            <div className="qr-frame">
+              {qrUrl && (
+                <img src={qrUrl} alt={`Mã QR vào phòng ${roomCode}`} width="260" height="260" />
+              )}
             </div>
-            <div className="lobby-meta">
-              <span>📝 {quizData.length} câu hỏi</span>
-              <span>⏱️ {TIME_LIMIT}s/câu</span>
-            </div>
-          </div>
-
-          <div className="lobby-main">
-            {/* QR + Code */}
-            <div className="lobby-join-panel">
-              <div className="join-instruction">
-                📱 Người chơi quét mã để tham gia
-              </div>
-              <img className="qr-code" src={qrUrl} alt="QR join" />
-              <div className="room-code-display">
-                <span className="code-label">MÃ PHÒNG</span>
-                <span className="code-value">{roomCode}</span>
-              </div>
-              <div className="join-url">{joinUrl}</div>
-            </div>
-
-            {/* Player list */}
-            <div className="lobby-players-panel">
-              <div className="players-header">
-                <span className="players-count-badge">
-                  👥 {players.length} người đã tham gia
-                </span>
-              </div>
-              <div className="players-grid">
-                {players.length === 0 ? (
-                  <div className="no-players">
-                    <div className="waiting-dots">
-                      <span />
-                      <span />
-                      <span />
-                    </div>
-                    <p>Chờ người chơi tham gia...</p>
-                  </div>
-                ) : (
-                  players.map((p, i) => (
-                    <div
-                      key={p.id}
-                      className="player-chip"
-                      style={{
-                        borderColor: p.color,
-                        animationDelay: `${i * 0.05}s`,
-                      }}
-                    >
-                      <span
-                        className="player-avatar"
-                        style={{ background: p.color }}
-                      >
-                        {p.name[0].toUpperCase()}
-                      </span>
-                      <span className="player-name">{p.name}</span>
-                    </div>
-                  ))
-                )}
-              </div>
-
-              <button
-                className={`host-start-btn ${players.length === 0 ? "disabled" : ""}`}
-                onClick={handleStart}
-                disabled={players.length === 0}
-              >
-                {players.length === 0
-                  ? "⏳ Chờ người chơi..."
-                  : `🚀 BẮT ĐẦU (${players.length} người)`}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── QUESTION ── */}
-      {phase === "question" && (
-        <div className="question-screen">
-          {/* Top bar */}
-          <div className="q-topbar">
-            <div className="q-progress">
-              {quizData.map((_, i) => (
-                <div
-                  key={i}
-                  className={`q-dot ${i === currentQ ? "active" : ""} ${i < currentQ ? "done" : ""}`}
-                />
+            <div className="room-code" aria-label={`Mã phòng ${roomCode}`}>
+              {roomCode.split("").map((c, i) => (
+                <span key={i}>{c}</span>
               ))}
             </div>
-            <div className="q-counter">
-              Câu <strong>{currentQ + 1}</strong> / {quizData.length}
+            <p className="join-url">{joinUrl.replace(/^https?:\/\//, "")}</p>
+          </section>
+
+          <section className="lobby-players">
+            <header className="lobby-head">
+              <h1 className="display">Giải mã con chữ</h1>
+              <p className="muted">
+                {quizData.length} câu · {TIME_LIMIT} giây mỗi câu · đúng liên tiếp có thưởng
+              </p>
+            </header>
+
+            <div className="player-count">
+              <strong>{players.length}</strong>
+              <span>người đã vào phòng</span>
             </div>
 
-            {/* Answers counter */}
-            <div className="answers-counter">
-              ✅ {answeredCount} / {players.length} đã trả lời
-            </div>
+            <ul className="chips">
+              {players.length === 0 && (
+                <li className="chips-empty">Chưa có ai. Mời cả lớp quét mã QR bên trái.</li>
+              )}
+              {players.map((p) => (
+                <li key={p.id} className="chip">
+                  <Avatar player={p} size={30} />
+                  <span>{p.name}</span>
+                </li>
+              ))}
+            </ul>
 
-            {/* Force reveal button */}
-            <button className="force-reveal-btn" onClick={handleReveal}>
-              Hiện đáp án →
+            <button
+              className="btn btn-red btn-xl"
+              onClick={handleStart}
+              disabled={players.length === 0}
+            >
+              {players.length === 0 ? "Đang chờ người chơi" : "Bắt đầu"}
             </button>
-          </div>
+          </section>
+        </div>
+      )}
 
-          <div className="q-body">
-            {/* Left: question content */}
-            <div className="q-content">
-              <div
-                className="q-difficulty-tag"
-                style={{
-                  color: DIFFICULTY_COLOR[quizData[currentQ].difficulty],
-                }}
-              >
-                {quizData[currentQ].difficulty === "Dễ"
-                  ? "🟢"
-                  : quizData[currentQ].difficulty === "Trung bình"
-                    ? "🟡"
-                    : "🔴"}{" "}
-                {quizData[currentQ].difficulty}
-              </div>
-              <p className="q-text">{quizData[currentQ].question}</p>
+      {/* ── CÂU HỎI ── */}
+      {phase === "question" && (
+        <div className="stage">
+          <header className="stage-bar">
+            <ol className="progress" aria-label="Tiến độ">
+              {quizData.map((_, i) => (
+                <li
+                  key={i}
+                  className={i < currentQ ? "done" : i === currentQ ? "now" : ""}
+                />
+              ))}
+            </ol>
+            <span className="stage-count">
+              Câu {currentQ + 1}/{quizData.length}
+            </span>
+            <span className={`diff diff-${q.difficulty === "Dễ" ? 1 : q.difficulty === "Khó" ? 3 : 2}`}>
+              {q.difficulty}
+            </span>
+            <button className="btn btn-ghost" onClick={handleReveal}>
+              Hiện đáp án
+            </button>
+          </header>
 
-              {/* Scrambled word */}
-              <div className="q-scrambled-wrap">
-                <div className="q-scrambled-label">🔀 Từ khóa bị xáo trộn</div>
-                <div className="q-scrambled">
-                  {quizData[currentQ].scrambled.split(" - ").map((part, pi) => (
-                    <span key={pi} className="q-scrambled-group">
-                      {part.split("").map((ch, ci) => (
-                        <span
-                          key={ci}
-                          className="q-scrambled-char"
-                          style={{ animationDelay: `${(pi * 6 + ci) * 0.04}s` }}
-                        >
-                          {ch}
-                        </span>
-                      ))}
-                      {pi <
-                        quizData[currentQ].scrambled.split(" - ").length -
-                          1 && <span className="q-scrambled-sep">–</span>}
-                    </span>
+          <div className="stage-body">
+            <section className="stage-main">
+              <p className="q-type">
+                {q.type === "choice" ? "Chọn đáp án đúng" : "Sắp xếp lại các chữ cái"}
+              </p>
+              <h2 className="q-text">{q.question}</h2>
+              {q.type === "scramble" ? (
+                <Tiles question={q} size="xl" />
+              ) : (
+                <ol className="options-board">
+                  {q.options.map((opt, i) => (
+                    <li key={i}>
+                      <span className="opt-letter">{LETTERS[i]}</span>
+                      <span>{opt}</span>
+                    </li>
                   ))}
-                </div>
-              </div>
-            </div>
+                </ol>
+              )}
+            </section>
 
-            {/* Right: timer + mini leaderboard */}
-            <div className="q-sidebar">
-              {/* Circular timer */}
-              <div className="timer-wrap">
-                <svg viewBox="0 0 120 120" className="timer-svg">
-                  <circle
-                    cx="60"
-                    cy="60"
-                    r="52"
-                    fill="none"
-                    stroke="rgba(255,255,255,0.06)"
-                    strokeWidth="10"
-                  />
-                  <circle
-                    cx="60"
-                    cy="60"
-                    r="52"
-                    fill="none"
-                    stroke={timerColor}
-                    strokeWidth="10"
-                    strokeLinecap="round"
-                    strokeDasharray={`${2 * Math.PI * 52}`}
-                    strokeDashoffset={`${2 * Math.PI * 52 * (1 - timePercent / 100)}`}
-                    transform="rotate(-90 60 60)"
-                    style={{
-                      transition: "stroke-dashoffset 1s linear, stroke 0.5s",
-                    }}
-                  />
-                </svg>
-                <div className="timer-value" style={{ color: timerColor }}>
-                  {timeLeft}
-                </div>
+            <aside className="stage-side">
+              <div className={`clock ${timeLeft <= 5 ? "is-low" : ""}`}>
+                <span className="clock-num">{timeLeft}</span>
+                <span className="clock-unit">giây</span>
               </div>
-
-              {/* Mini leaderboard */}
-              <div className="mini-leaderboard">
-                <div className="mini-lb-title">🏆 Bảng điểm</div>
-                {leaderboard.slice(0, 5).map((p, i) => (
-                  <div key={p.id} className="mini-lb-row">
-                    <span className="mini-lb-rank">
-                      {i === 0
-                        ? "🥇"
-                        : i === 1
-                          ? "🥈"
-                          : i === 2
-                            ? "🥉"
-                            : `${i + 1}.`}
-                    </span>
-                    <span
-                      className="mini-lb-dot"
-                      style={{ background: p.color }}
-                    />
-                    <span className="mini-lb-name">{p.name}</span>
-                    <span className="mini-lb-score">{p.score}</span>
-                  </div>
-                ))}
+              <TimerBar timeLeft={timeLeft} total={TIME_LIMIT} />
+              <div className="answered">
+                <strong>
+                  {answeredCount}/{players.length}
+                </strong>
+                <span>đã trả lời</span>
               </div>
-            </div>
+            </aside>
           </div>
         </div>
       )}
 
-      {/* ── REVEAL ── */}
+      {/* ── ĐÁP ÁN ── */}
       {phase === "reveal" && (
-        <div className="reveal-screen">
-          <div className="reveal-header">
-            <span>
-              Câu {currentQ + 1} / {quizData.length} — Đáp án
+        <div className="stage">
+          <header className="stage-bar">
+            <ol className="progress" aria-label="Tiến độ">
+              {quizData.map((_, i) => (
+                <li key={i} className={i <= currentQ ? "done" : ""} />
+              ))}
+            </ol>
+            <span className="stage-count">
+              Đáp án câu {currentQ + 1}/{quizData.length}
             </span>
-          </div>
+          </header>
 
-          <div className="reveal-body">
-            <div className="reveal-left">
-              <p className="reveal-question">{quizData[currentQ].question}</p>
-              <div className="reveal-answer-box">
-                <div className="reveal-label">✅ Đáp án đúng</div>
-                <div className="reveal-answer">
-                  {quizData[currentQ].correct}
-                </div>
+          <div className="reveal">
+            <section className="reveal-main">
+              <p className="q-text q-text-sm">{q.question}</p>
+              <div className="answer-plate">
+                <Star size={34} className="plate-star" />
+                <span>{q.correct}</span>
               </div>
+              <p className="explain">{q.explain}</p>
 
-              {/* Answer stats */}
-              <div className="answer-stats">
-                <div className="stat-chip stat-correct-chip">
-                  <span>✅</span>
-                  <span>
-                    Đúng:{" "}
-                    {Object.values(answers).filter((a) => a.isCorrect).length}
-                  </span>
-                </div>
-                <div className="stat-chip stat-wrong-chip">
-                  <span>❌</span>
-                  <span>
-                    Sai:{" "}
-                    {Object.values(answers).filter((a) => !a.isCorrect).length}
-                  </span>
-                </div>
-                <div className="stat-chip stat-skip-chip">
-                  <span>⏭️</span>
-                  <span>
-                    Bỏ qua: {players.length - Object.keys(answers).length}
-                  </span>
-                </div>
-              </div>
-            </div>
+              {q.type === "choice" ? (
+                <ol className="dist">
+                  {q.options.map((opt, i) => {
+                    const n = answerList.filter((a) => a.answer === opt).length;
+                    const pct = players.length ? (n / players.length) * 100 : 0;
+                    const isRight = opt === q.correct;
+                    return (
+                      <li key={i} className={isRight ? "is-right" : ""}>
+                        <span className="opt-letter">{LETTERS[i]}</span>
+                        <span className="dist-bar">
+                          <span style={{ width: `${pct}%` }} />
+                        </span>
+                        <span className="dist-n">
+                          {n} {isRight ? "✓" : ""}
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ol>
+              ) : (
+                <p className="tally">
+                  <strong>{correctCount}</strong> đúng ·{" "}
+                  <strong>{answerList.length - correctCount}</strong> sai ·{" "}
+                  <strong>{Math.max(0, players.length - answerList.length)}</strong> chưa trả lời
+                </p>
+              )}
+            </section>
 
-            {/* Right: top 5 leaderboard */}
-            <div className="reveal-right">
-              <div className="reveal-lb-title">📊 Bảng xếp hạng</div>
-              <div className="reveal-lb-list">
-                {leaderboard.slice(0, 8).map((p, i) => (
-                  <div
-                    key={p.id}
-                    className="reveal-lb-row"
-                    style={{ animationDelay: `${i * 0.1}s` }}
-                  >
-                    <span className="reveal-lb-rank">
-                      {i === 0
-                        ? "🥇"
-                        : i === 1
-                          ? "🥈"
-                          : i === 2
-                            ? "🥉"
-                            : `#${i + 1}`}
-                    </span>
-                    <span
-                      className="reveal-lb-avatar"
-                      style={{ background: p.color }}
-                    >
-                      {p.name[0].toUpperCase()}
-                    </span>
-                    <span className="reveal-lb-name">{p.name}</span>
-                    <div className="reveal-lb-right">
-                      {answers[p.id] && (
-                        <span
-                          className={`reveal-lb-ans ${answers[p.id].isCorrect ? "ans-correct" : "ans-wrong"}`}
-                        >
-                          {answers[p.id].isCorrect
-                            ? "+" + answers[p.id].points
-                            : "0"}
+            <section className="reveal-side">
+              <h3 className="side-title">Bảng xếp hạng</h3>
+              <ol className="ranks">
+                {leaderboard.slice(0, 8).map((p, i) => {
+                  const a = answers[p.id];
+                  return (
+                    <li key={p.id} className={i < 3 ? `top top-${i + 1}` : ""}>
+                      <span className="rank-n">{i + 1}</span>
+                      <RankMove prevRanks={prevRanks} id={p.id} index={i} />
+                      <Avatar player={p} size={30} />
+                      <span className="rank-name">{p.name}</span>
+                      {a?.isCorrect && p.streak >= 2 && (
+                        <span className="streak" title="Đúng liên tiếp">
+                          🔥{p.streak}
                         </span>
                       )}
-                      <span className="reveal-lb-score">{p.score}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              <button className="next-btn-host" onClick={handleNext}>
-                {currentQ < quizData.length - 1
-                  ? "Câu tiếp theo →"
-                  : "Kết thúc & Xem kết quả 🏆"}
+                      <span className={`gain ${a?.isCorrect ? "pos" : ""}`}>
+                        {a ? (a.isCorrect ? `+${a.points}` : "+0") : ""}
+                      </span>
+                      <span className="rank-score">{p.score}</span>
+                    </li>
+                  );
+                })}
+              </ol>
+              <button className="btn btn-red btn-xl" onClick={handleNext}>
+                {currentQ < quizData.length - 1 ? "Câu tiếp theo" : "Xem kết quả chung cuộc"}
               </button>
-            </div>
+            </section>
           </div>
         </div>
       )}
 
-      {/* ── FINISHED ── */}
+      {/* ── KẾT QUẢ ── */}
       {phase === "finished" && (
-        <div className="final-screen">
-          <div className="final-header">
-            <h1 className="final-title">🏆 Kết Quả Cuối Cùng</h1>
-          </div>
-
-          {/* Podium */}
-          {leaderboard.length >= 1 && (
-            <div className="podium">
-              {/* 2nd */}
-              {leaderboard[1] && (
-                <div className="podium-slot podium-2">
-                  <div
-                    className="podium-avatar"
-                    style={{ background: leaderboard[1].color }}
-                  >
-                    {leaderboard[1].name[0].toUpperCase()}
-                  </div>
-                  <div className="podium-name">{leaderboard[1].name}</div>
-                  <div className="podium-score">
-                    {leaderboard[1].score} điểm
-                  </div>
-                  <div className="podium-bar bar-2">🥈</div>
-                </div>
-              )}
-              {/* 1st */}
-              <div className="podium-slot podium-1">
-                <div className="podium-crown">👑</div>
-                <div
-                  className="podium-avatar avatar-1"
-                  style={{ background: leaderboard[0].color }}
-                >
-                  {leaderboard[0].name[0].toUpperCase()}
-                </div>
-                <div className="podium-name">{leaderboard[0].name}</div>
-                <div className="podium-score">{leaderboard[0].score} điểm</div>
-                <div className="podium-bar bar-1">🥇</div>
-              </div>
-              {/* 3rd */}
-              {leaderboard[2] && (
-                <div className="podium-slot podium-3">
-                  <div
-                    className="podium-avatar"
-                    style={{ background: leaderboard[2].color }}
-                  >
-                    {leaderboard[2].name[0].toUpperCase()}
-                  </div>
-                  <div className="podium-name">{leaderboard[2].name}</div>
-                  <div className="podium-score">
-                    {leaderboard[2].score} điểm
-                  </div>
-                  <div className="podium-bar bar-3">🥉</div>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Full ranking */}
-          <div className="final-ranking">
-            {leaderboard.slice(3).map((p, i) => (
-              <div
-                key={p.id}
-                className="final-rank-row"
-                style={{ animationDelay: `${i * 0.08}s` }}
-              >
-                <span className="final-rank-num">#{i + 4}</span>
-                <span
-                  className="final-rank-dot"
-                  style={{ background: p.color }}
-                />
-                <span className="final-rank-name">{p.name}</span>
-                <span className="final-rank-score">{p.score} điểm</span>
-              </div>
-            ))}
-          </div>
-
-          {/* Prize message */}
-          {leaderboard[0] && (
-            <div className="prize-banner">
-              🎁 Xin chúc mừng <strong>{leaderboard[0].name}</strong> — người
-              chiến thắng xuất sắc nhất! 🎉
-            </div>
+        <div className="final">
+          <h1 className="display final-title">Chung cuộc</h1>
+          <Podium players={leaderboard} />
+          {leaderboard.length > 3 && (
+            <ol className="ranks ranks-rest" start={4}>
+              {leaderboard.slice(3, 12).map((p, i) => (
+                <li key={p.id}>
+                  <span className="rank-n">{i + 4}</span>
+                  <Avatar player={p} size={28} />
+                  <span className="rank-name">{p.name}</span>
+                  <span className="rank-score">{p.score}</span>
+                </li>
+              ))}
+            </ol>
           )}
         </div>
       )}
-    </div>
+    </main>
   );
 }

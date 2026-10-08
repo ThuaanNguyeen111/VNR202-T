@@ -1,16 +1,31 @@
-# React + Vite
+# Giải mã con chữ – trò chơi ôn tập HCM202
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Trò chơi kiểu Kahoot cho phần ôn tập Chương VI, mục IV (Tư tưởng Hồ Chí Minh về văn hóa, đạo đức, con người).
 
-Currently, two official plugins are available:
+- Máy chiếu mở trang **Người dẫn trò chơi** → hiện mã QR + mã phòng.
+- Cả lớp quét QR bằng điện thoại, nhập tên.
+- 2 dạng câu: **chọn A/B/C/D** và **giải chữ** (gõ có dấu hay không dấu đều được).
+- 30 giây/câu, trả lời nhanh nhiều điểm, đúng liên tiếp được thưởng (🔥 tối đa +30%), dùng gợi ý chỉ nhận 50% điểm.
+- Sau mỗi câu: đáp án, giải thích theo giáo trình, thống kê lựa chọn, bảng xếp hạng có mũi tên lên/xuống hạng.
+- Cả lớp trả lời xong thì tự hiện đáp án, không cần chờ hết giờ.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## Sửa câu hỏi
+Mở `src/data/quizData.js`. Mỗi câu có `type` ("choice" hoặc "scramble"), `question`, `correct`, `explain`; câu "choice" có thêm `options` (đáp án đúng phải trùng y hệt một phương án). Chữ xáo trộn được tạo tự động.
 
-## React Compiler
+Đổi số giây mỗi câu: `TIME_LIMIT` trong `src/firebase/gameService.js`.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Chạy thử trên máy
+```bash
+npm install
+npm run dev -- --host
+```
+Mở `http://localhost:5173` → "Mở phòng mới". Điện thoại cùng Wi-Fi vào bằng địa chỉ `http://192.168.x.x:5173` mà terminal in ra.
 
-## Expanding the ESLint configuration
+## Đưa lên mạng (khuyên dùng khi thuyết trình)
+```bash
+npm run build
+```
+Rồi đăng thư mục `dist` lên Vercel/Netlify (hoặc nối repo GitHub với Vercel để tự deploy mỗi lần push). Nhớ khai báo các biến `VITE_FIREBASE_*` trong phần Environment Variables của Vercel.
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+## Firebase
+Cần file `.env` (xem `.env.example`). Trong Firebase Console → Realtime Database → Rules, đảm bảo cho phép đọc/ghi nhánh `rooms`.

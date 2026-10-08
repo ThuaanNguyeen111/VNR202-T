@@ -1,23 +1,10 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useCallback } from "react";
 
 export function useConfetti() {
   const [particles, setParticles] = useState([]);
 
   const triggerConfetti = useCallback((count = 50) => {
-    const colors = [
-      "#FF6B6B",
-      "#4ECDC4",
-      "#45B7D1",
-      "#96CEB4",
-      "#FFEAA7",
-      "#DDA0DD",
-      "#FF9FF3",
-      "#54A0FF",
-      "#5F27CD",
-      "#01A3A4",
-      "#F368E0",
-      "#FF6348",
-    ];
+    const colors = ["#CC0500", "#F2B705", "#161616", "#FFFDF7", "#8E0300", "#F2B705"];
 
     const newParticles = Array.from({ length: count }, (_, i) => ({
       id: Date.now() + i,
@@ -39,39 +26,6 @@ export function useConfetti() {
   }, []);
 
   return { particles, triggerConfetti };
-}
-
-export function useTimer(initialTime, isActive, onTimeUp) {
-  const [timeLeft, setTimeLeft] = useState(initialTime);
-
-  useEffect(() => {
-    setTimeLeft(initialTime);
-  }, [initialTime]);
-
-  useEffect(() => {
-    if (!isActive || timeLeft <= 0) {
-      if (timeLeft <= 0 && isActive) onTimeUp?.();
-      return;
-    }
-
-    const timer = setInterval(() => {
-      setTimeLeft((prev) => {
-        if (prev <= 1) {
-          clearInterval(timer);
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-
-    return () => clearInterval(timer);
-  }, [isActive, timeLeft, onTimeUp]);
-
-  const resetTimer = useCallback(() => {
-    setTimeLeft(initialTime);
-  }, [initialTime]);
-
-  return { timeLeft, resetTimer };
 }
 
 export function useSoundEffects() {
@@ -121,7 +75,7 @@ export function useSoundEffects() {
           osc.stop(audioCtx.currentTime + i * 0.15 + 0.3);
         });
       }
-    } catch (e) {
+    } catch {
       // Audio context not available
     }
   }, []);

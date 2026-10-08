@@ -8,65 +8,82 @@ import {
   onValue,
   off,
   remove,
-  serverTimestamp,
+  runTransaction,
 } from "firebase/database";
+
+// ─── Cấu hình trò chơi ────────────────────────────────────────────────────────
+export const TIME_LIMIT = 30; // giây cho mỗi câu
+const MAX_POINTS = 1000;
+const MIN_POINTS = 100;
+const HINT_PENALTY = 0.5; // dùng gợi ý thì chỉ nhận 50% điểm
+const STREAK_STEP = 0.1; // mỗi câu đúng liên tiếp +10%
+const STREAK_MAX = 0.3; // thưởng tối đa +30%
+
+// ─── Đồng bộ giờ với máy chủ Firebase ────────────────────────────────────────
+// Điện thoại và máy chiếu có thể lệch giờ vài giây; dùng giờ máy chủ để tính
+// thời gian trả lời công bằng.
+let serverOffset = 0;
+onValue(ref(db, ".info/serverTimeOffset"), (snap) => {
+  serverOffset = snap.val() || 0;
+});
+export const now = () => Date.now() + serverOffset;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-/** Generate a random 6-character room code (uppercase letters) */
+/** Mã phòng gồm 6 chữ số: gõ trên điện thoại dễ, không bị bộ gõ tiếng Việt đổi chữ */
+export const CODE_LENGTH = 6;
 export function generateRoomCode() {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  let code = "";
-  for (let i = 0; i < 6; i++) {
-    code += chars[Math.floor(Math.random() * chars.length)];
-  }
+  let code = String(Math.floor(Math.random() * 9) + 1);
+  for (let i = 1; i < CODE_LENGTH; i++) code += Math.floor(Math.random() * 10);
   return code;
 }
 
-/** Calculate points based on response time (1000 → 100 over 30s) */
-export function calculatePoints(timeMs, isCorrect) {
-  if (!isCorrect) return 0;
-  const timeLimitMs = 60_000;
-  const minPts = 100;
-  const maxPts = 1000;
-  const ratio = Math.max(0, 1 - timeMs / timeLimitMs);
-  return Math.round(minPts + (maxPts - minPts) * ratio);
+/** Chỉ giữ lại chữ số, tối đa 6 số */
+export function cleanRoomCode(value) {
+  return String(value || "").replace(/\D/g, "").slice(0, CODE_LENGTH);
 }
 
-/** Normalize Vietnamese answer for comparison */
+/** Chuẩn hóa để so đáp án: không phân biệt hoa/thường, khoảng trắng, dấu */
 export function normalizeAnswer(str) {
-  return str.trim().toLowerCase().normalize("NFC").replace(/\s+/g, " ");
+  return String(str)
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/đ/g, "d")
+    .replace(/Đ/g, "D")
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** Điểm theo tốc độ: 1000 → 100 trong TIME_LIMIT giây */
+export function calculatePoints(timeMs, isCorrect) {
+  if (!isCorrect) return 0;
+  const ratio = Math.max(0, 1 - timeMs / (TIME_LIMIT * 1000));
+  return Math.round(MIN_POINTS + (MAX_POINTS - MIN_POINTS) * ratio);
 }
 
 // ─── Room lifecycle ───────────────────────────────────────────────────────────
 
-/**
- * Create a new game room.
- * Returns the room code.
- */
 export async function createRoom(totalQuestions) {
   let code = generateRoomCode();
-  // Ensure room code is unique
-  let attempt = 0;
-  while (attempt < 5) {
+  for (let attempt = 0; attempt < 5; attempt++) {
     const snap = await get(ref(db, `rooms/${code}`));
     if (!snap.exists()) break;
     code = generateRoomCode();
-    attempt++;
   }
 
   await set(ref(db, `rooms/${code}`), {
-    state: "lobby",        // lobby | question | reveal | finished
+    state: "lobby", // lobby | question | reveal | finished
     currentQuestion: 0,
     totalQuestions,
     questionStartTime: 0,
-    createdAt: Date.now(),
+    createdAt: now(),
   });
 
   return code;
 }
 
-/** Delete a room (host cleanup) */
 export async function deleteRoom(roomCode) {
   await remove(ref(db, `rooms/${roomCode}`));
 }
@@ -74,53 +91,47 @@ export async function deleteRoom(roomCode) {
 // ─── Player management ────────────────────────────────────────────────────────
 
 const PLAYER_COLORS = [
-  "#FF6B6B","#4ECDC4","#45B7D1","#96CEB4","#FFEAA7",
-  "#DDA0DD","#FF9FF3","#54A0FF","#FF6348","#2ED573",
-  "#FFA502","#FF4757","#7BED9F","#70A1FF","#ECCC68",
+  "#CC0500", "#1F4E8C", "#2E7D32", "#B8860B", "#6A1B9A",
+  "#00695C", "#C2185B", "#5D4037", "#E65100", "#283593",
 ];
 
-/**
- * Join a room as a player.
- * Returns { playerId } or throws if room not found.
- */
 export async function joinRoom(roomCode, playerName) {
   const roomSnap = await get(ref(db, `rooms/${roomCode}`));
-  if (!roomSnap.exists()) throw new Error("Phòng không tồn tại!");
+  if (!roomSnap.exists()) throw new Error("Không tìm thấy phòng này. Kiểm tra lại mã phòng.");
   const roomData = roomSnap.val();
-  if (roomData.state !== "lobby") throw new Error("Trò chơi đã bắt đầu!");
+  if (roomData.state !== "lobby") throw new Error("Trò chơi đã bắt đầu, không thể vào thêm.");
 
   const playerRef = push(ref(db, `rooms/${roomCode}/players`));
-  const colorIndex = Math.floor(Math.random() * PLAYER_COLORS.length);
   await set(playerRef, {
     name: playerName.trim(),
     score: 0,
-    color: PLAYER_COLORS[colorIndex],
-    joinedAt: Date.now(),
-    lastSeen: Date.now(),
+    streak: 0,
+    lastCorrectQ: -2,
+    color: PLAYER_COLORS[Math.floor(Math.random() * PLAYER_COLORS.length)],
+    joinedAt: now(),
+    lastSeen: now(),
   });
 
   return { playerId: playerRef.key };
 }
 
-/** Update player last seen (keep-alive) */
 export async function pingPlayer(roomCode, playerId) {
   await update(ref(db, `rooms/${roomCode}/players/${playerId}`), {
-    lastSeen: Date.now(),
+    lastSeen: now(),
   });
 }
 
 // ─── Game flow (host controls) ────────────────────────────────────────────────
 
-/** Host starts the game → set state to 'question', currentQuestion = 0 */
 export async function startGame(roomCode) {
   await update(ref(db, `rooms/${roomCode}`), {
     state: "question",
     currentQuestion: 0,
-    questionStartTime: Date.now(),
+    questionStartTime: now(),
+    revealedAnswer: null,
   });
 }
 
-/** Host moves to reveal phase for current question */
 export async function revealAnswer(roomCode, questionIndex, correctAnswer) {
   await update(ref(db, `rooms/${roomCode}`), {
     state: "reveal",
@@ -128,28 +139,24 @@ export async function revealAnswer(roomCode, questionIndex, correctAnswer) {
   });
 }
 
-/** Host moves to next question */
 export async function nextQuestion(roomCode, nextIndex) {
   await update(ref(db, `rooms/${roomCode}`), {
     state: "question",
     currentQuestion: nextIndex,
-    questionStartTime: Date.now(),
+    questionStartTime: now(),
     revealedAnswer: null,
   });
 }
 
-/** Host ends the game */
 export async function endGame(roomCode) {
-  await update(ref(db, `rooms/${roomCode}`), {
-    state: "finished",
-  });
+  await update(ref(db, `rooms/${roomCode}`), { state: "finished" });
 }
 
 // ─── Answer submission ────────────────────────────────────────────────────────
 
 /**
- * Player submits an answer.
- * Calculates points and writes to Firebase.
+ * Người chơi nộp đáp án.
+ * Trả về { isCorrect, points, timeMs, streak, bonus }.
  */
 export async function submitAnswer(
   roomCode,
@@ -157,71 +164,74 @@ export async function submitAnswer(
   playerId,
   answer,
   correctAnswer,
-  questionStartTime
+  questionStartTime,
+  usedHint = false
 ) {
-  const timeMs = Date.now() - questionStartTime;
+  const timeMs = Math.max(0, now() - questionStartTime);
+  const inTime = timeMs <= TIME_LIMIT * 1000 + 1500; // cho phép trễ mạng 1,5 giây
   const isCorrect =
-    normalizeAnswer(answer) === normalizeAnswer(correctAnswer);
-  const points = calculatePoints(timeMs, isCorrect);
+    inTime && normalizeAnswer(answer) === normalizeAnswer(correctAnswer);
 
-  // Write answer
-  await set(
-    ref(db, `rooms/${roomCode}/answers/${questionIndex}/${playerId}`),
-    {
-      answer: answer.trim(),
-      isCorrect,
-      points,
-      timeMs,
-      submittedAt: Date.now(),
+  let base = calculatePoints(timeMs, isCorrect);
+  if (usedHint) base = Math.round(base * HINT_PENALTY);
+
+  // Cập nhật điểm + chuỗi đúng liên tiếp trong một transaction
+  let result = { streak: 0, bonus: 0, points: 0 };
+  await runTransaction(
+    ref(db, `rooms/${roomCode}/players/${playerId}`),
+    (p) => {
+      if (!p) return p;
+      const continues = p.lastCorrectQ === questionIndex - 1;
+      const streak = isCorrect ? (continues ? (p.streak || 0) + 1 : 1) : 0;
+      const bonusRate = Math.min(STREAK_MAX, Math.max(0, streak - 1) * STREAK_STEP);
+      const bonus = Math.round(base * bonusRate);
+      result = { streak, bonus, points: base + bonus };
+      return {
+        ...p,
+        score: (p.score || 0) + base + bonus,
+        streak,
+        lastCorrectQ: isCorrect ? questionIndex : p.lastCorrectQ ?? -2,
+      };
     }
   );
 
-  // Update player total score
-  const playerSnap = await get(ref(db, `rooms/${roomCode}/players/${playerId}`));
-  if (playerSnap.exists()) {
-    const currentScore = playerSnap.val().score || 0;
-    await update(ref(db, `rooms/${roomCode}/players/${playerId}`), {
-      score: currentScore + points,
-    });
-  }
+  await set(ref(db, `rooms/${roomCode}/answers/${questionIndex}/${playerId}`), {
+    answer: String(answer).trim(),
+    isCorrect,
+    points: result.points,
+    bonus: result.bonus,
+    streak: result.streak,
+    usedHint,
+    timeMs,
+    submittedAt: now(),
+  });
 
-  return { isCorrect, points, timeMs };
+  return { isCorrect, timeMs, ...result };
 }
 
 // ─── Realtime listeners ───────────────────────────────────────────────────────
 
-/** Listen to the full room state */
 export function listenRoom(roomCode, callback) {
   const r = ref(db, `rooms/${roomCode}`);
   onValue(r, (snap) => callback(snap.val()));
   return () => off(r);
 }
 
-/** Listen to players in a room */
 export function listenPlayers(roomCode, callback) {
   const r = ref(db, `rooms/${roomCode}/players`);
   onValue(r, (snap) => {
     const val = snap.val() || {};
-    const players = Object.entries(val).map(([id, data]) => ({
-      id,
-      ...data,
-    }));
-    callback(players);
+    callback(Object.entries(val).map(([id, data]) => ({ id, ...data })));
   });
   return () => off(r);
 }
 
-/** Listen to answers for a specific question */
 export function listenAnswers(roomCode, questionIndex, callback) {
   const r = ref(db, `rooms/${roomCode}/answers/${questionIndex}`);
-  onValue(r, (snap) => {
-    const val = snap.val() || {};
-    callback(val);
-  });
+  onValue(r, (snap) => callback(snap.val() || {}));
   return () => off(r);
 }
 
-/** One-time check if room exists */
 export async function checkRoom(roomCode) {
   const snap = await get(ref(db, `rooms/${roomCode}`));
   return snap.exists() ? snap.val() : null;

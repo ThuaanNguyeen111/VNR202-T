@@ -1,555 +1,351 @@
-import { useState, useEffect, useCallback, useRef } from "react";
-import { quizData } from "../data/quizData";
+import { useState, useEffect, useRef } from "react";
+import { quizData, LETTERS } from "../data/quizData";
 import {
+  TIME_LIMIT,
+  now,
   joinRoom,
   submitAnswer,
-  checkRoom,
   listenRoom,
   pingPlayer,
   listenPlayers,
-  listenAnswers,
+  CODE_LENGTH,
+  cleanRoomCode,
 } from "../firebase/gameService";
 import { useConfetti, useSoundEffects } from "../hooks/useGameEffects";
 import Confetti from "../components/Confetti";
-import "./PlayerPage.css";
+import { Star, Tiles, Avatar, TimerBar, Podium } from "../components/ui";
 
-const DIFFICULTY_COLOR = {
-  Dễ: "#34d399",
-  "Trung bình": "#fbbf24",
-  Khó: "#f87171",
-};
+const byScore = (a, b) => b.score - a.score || a.joinedAt - b.joinedAt;
 
 export default function PlayerPage({ roomCode: initialRoomCode }) {
   const [phase, setPhase] = useState("join"); // join|waiting|question|result|finished
-  const [roomCodeInput, setRoomCodeInput] = useState(initialRoomCode || "");
-  const [playerName, setPlayerName] = useState("");
+  const [codeInput, setCodeInput] = useState(initialRoomCode || "");
+  const [name, setName] = useState("");
   const [playerId, setPlayerId] = useState("");
-  const [roomCode, setRoomCode] = useState(initialRoomCode || "");
+  const [roomCode, setRoomCode] = useState("");
   const [room, setRoom] = useState(null);
-  const [userAnswer, setUserAnswer] = useState("");
+  const [players, setPlayers] = useState([]);
+  const [answer, setAnswer] = useState("");
+  const [picked, setPicked] = useState(null);
   const [submitted, setSubmitted] = useState(false);
-  const [lastResult, setLastResult] = useState(null); // { isCorrect, points, timeMs }
-  const [totalScore, setTotalScore] = useState(0);
+  const [usedHint, setUsedHint] = useState(false);
+  const [result, setResult] = useState(null);
+  const [timeLeft, setTimeLeft] = useState(TIME_LIMIT);
   const [error, setError] = useState("");
   const [joining, setJoining] = useState(false);
-  const [showHint, setShowHint] = useState(false);
-  const [timeLeft, setTimeLeft] = useState(60);
-  const [finalRoom, setFinalRoom] = useState(null);
-  const [players, setPlayers] = useState([]);
-  const [answeredCount, setAnsweredCount] = useState(0);
 
-  const timerRef = useRef(null);
-  const playerIdRef = useRef("");
-  const roomCodeRef = useRef(roomCode);
-  const pingRef = useRef(null);
-  const prevQuestionRef = useRef(-1);
+  const prevQRef = useRef(-1);
   const prevStateRef = useRef("");
+  const resultRef = useRef(null);
+  useEffect(() => {
+    resultRef.current = result;
+  }, [result]);
 
   const { particles, triggerConfetti } = useConfetti();
   const { playSound } = useSoundEffects();
 
-  // ── Join room ────────────────────────────────────────────────────────────
-  const handleJoin = async () => {
-    if (!playerName.trim() || !roomCodeInput.trim()) return;
+  // ── Vào phòng ───────────────────────────────────────────────────────────
+  const handleJoin = async (e) => {
+    e?.preventDefault();
+    const code = cleanRoomCode(codeInput);
+    if (!name.trim() || code.length < CODE_LENGTH) return;
     setJoining(true);
     setError("");
     try {
-      const code = roomCodeInput.toUpperCase().trim();
-      const { playerId: pid } = await joinRoom(code, playerName);
-      playerIdRef.current = pid;
-      roomCodeRef.current = code;
+      const { playerId: pid } = await joinRoom(code, name);
       setPlayerId(pid);
       setRoomCode(code);
       setPhase("waiting");
       playSound("click");
-
-      // Ping keep-alive
-      pingRef.current = setInterval(() => {
-        pingPlayer(code, pid);
-      }, 10_000);
-    } catch (e) {
-      setError(e.message || "Không thể vào phòng. Kiểm tra mã phòng!");
+    } catch (err) {
+      setError(err.message || "Không vào được phòng. Kiểm tra lại mã phòng.");
     } finally {
       setJoining(false);
     }
   };
 
-  // ── Listen to room state ─────────────────────────────────────────────────
+  // ── Theo dõi phòng ──────────────────────────────────────────────────────
   useEffect(() => {
     if (!roomCode || !playerId) return;
+    const ping = setInterval(() => pingPlayer(roomCode, playerId), 10_000);
 
     const unsubRoom = listenRoom(roomCode, (data) => {
-      if (!data) return;
+      if (!data) {
+        setError("Phòng đã đóng.");
+        return;
+      }
       setRoom(data);
-
       const prevState = prevStateRef.current;
-      const prevQ = prevQuestionRef.current;
 
-      // New question started
-      if (data.state === "question") {
-        const isNewQ = data.currentQuestion !== prevQ;
-        if (isNewQ) {
-          prevQuestionRef.current = data.currentQuestion;
-          setSubmitted(false);
-          setUserAnswer("");
-          setShowHint(false);
-          setLastResult(null);
-          setPhase("question");
-          startLocalTimer(data.questionStartTime);
-          playSound("click");
-        } else if (prevState !== "question") {
-          setPhase("question");
+      if (data.state === "question" && data.currentQuestion !== prevQRef.current) {
+        prevQRef.current = data.currentQuestion;
+        setAnswer("");
+        setPicked(null);
+        setSubmitted(false);
+        setUsedHint(false);
+        setResult(null);
+        setPhase("question");
+      }
+      if (data.state === "reveal" && prevState !== "reveal") {
+        setPhase("result");
+        if (resultRef.current?.isCorrect) {
+          triggerConfetti(50);
+          playSound("correct");
+        } else {
+          playSound("wrong");
         }
       }
-
-      // Reveal phase
-      if (data.state === "reveal") {
-        stopTimer();
-        if (prevState !== "reveal") playSound(submitted ? "correct" : "wrong");
-        setPhase("result");
-      }
-
-      // Game finished
-      if (data.state === "finished") {
-        stopTimer();
-        setFinalRoom(data);
+      if (data.state === "finished" && prevState !== "finished") {
         setPhase("finished");
-        triggerConfetti(80);
+        triggerConfetti(90);
         playSound("victory");
       }
-
       prevStateRef.current = data.state;
     });
 
-    const unsubPlayers = listenPlayers(roomCode, (pList) => {
-      setPlayers(pList);
-    });
+    const unsubPlayers = listenPlayers(roomCode, (list) => setPlayers(list.sort(byScore)));
 
     return () => {
+      clearInterval(ping);
       unsubRoom();
       unsubPlayers();
-      clearInterval(pingRef.current);
     };
   }, [roomCode, playerId]); // eslint-disable-line
 
-  // ── Local timer synced with server start time ─────────────────────────────
-  const stopTimer = useCallback(() => {
-    if (timerRef.current) clearInterval(timerRef.current);
-  }, []);
-
-  const startLocalTimer = useCallback(
-    (questionStartTime) => {
-      stopTimer();
-      const update = () => {
-        const elapsed = Date.now() - questionStartTime;
-        const left = Math.max(0, 60 - Math.floor(elapsed / 1000));
-        setTimeLeft(left);
-        if (left <= 0) stopTimer();
-      };
-      update();
-      timerRef.current = setInterval(update, 500);
-    },
-    [stopTimer],
-  );
-
-  useEffect(() => () => stopTimer(), [stopTimer]);
-
-  // ── Listen to answers count for current question ──────────────────────────
+  // ── Đồng hồ ─────────────────────────────────────────────────────────────
   useEffect(() => {
-    if (
-      !roomCode ||
-      room?.currentQuestion === undefined ||
-      phase !== "question"
-    )
-      return;
+    if (phase !== "question" || !room?.questionStartTime) return;
+    const tick = () =>
+      setTimeLeft(
+        Math.max(0, TIME_LIMIT - Math.floor((now() - room.questionStartTime) / 1000))
+      );
+    tick();
+    const id = setInterval(tick, 250);
+    return () => clearInterval(id);
+  }, [phase, room?.questionStartTime]);
 
-    const unsubAnswers = listenAnswers(
-      roomCode,
-      room.currentQuestion,
-      (ans) => {
-        setAnsweredCount(Object.keys(ans).length);
-      },
-    );
-
-    return () => unsubAnswers();
-  }, [roomCode, room?.currentQuestion, phase]);
-
-  // ── Submit answer ────────────────────────────────────────────────────────
-  const handleSubmit = async () => {
-    if (!userAnswer.trim() || submitted || !room) return;
+  // ── Nộp đáp án ──────────────────────────────────────────────────────────
+  const send = async (value) => {
+    if (submitted || !room || !String(value).trim() || timeLeft === 0) return;
     setSubmitted(true);
-    stopTimer();
-
+    playSound("click");
     try {
-      const result = await submitAnswer(
+      const r = await submitAnswer(
         roomCode,
         room.currentQuestion,
         playerId,
-        userAnswer,
+        value,
         quizData[room.currentQuestion].correct,
         room.questionStartTime,
+        usedHint
       );
-      setLastResult(result);
-      setTotalScore((s) => s + result.points);
-      if (result.isCorrect) {
-        triggerConfetti(40);
-        playSound("correct");
-      } else {
-        playSound("wrong");
-      }
-    } catch (e) {
-      console.error(e);
+      setResult(r);
+    } catch (err) {
+      console.error(err);
+      setSubmitted(false);
+      setError("Gửi đáp án thất bại, thử lại.");
     }
   };
 
-  const handleKeyDown = (e) => {
-    if (e.key === "Enter") handleSubmit();
-  };
-
-  // ── Render ────────────────────────────────────────────────────────────────
-  const currentQuestion = room ? quizData[room.currentQuestion] : null;
-  const timePercent = (timeLeft / 60) * 100;
-  const sortedPlayers = [...players].sort((a, b) => b.score - a.score);
+  const q = room ? quizData[room.currentQuestion] : null;
+  const me = players.find((p) => p.id === playerId);
+  const myRank = players.findIndex((p) => p.id === playerId) + 1;
 
   return (
-    <div className="player-page">
+    <main className="player">
       <Confetti particles={particles} />
 
-      {/* ── JOIN ── */}
+      {/* ── VÀO PHÒNG ── */}
       {phase === "join" && (
-        <div className="join-screen">
-          <div className="join-logo">🤝</div>
-          <h1 className="join-title">
-            Giải Mã
-            <br />
-            <span>Đáp Án</span>
-          </h1>
+        <form className="p-join" onSubmit={handleJoin}>
+          <a className="back-link" href={window.location.pathname}>
+            ← Trang chủ
+          </a>
+          <Star size={56} className="p-join-star" />
+          <h1 className="display p-join-title">Giải mã con chữ</h1>
+          <p className="muted">Ôn tập HCM202 · Chương VI, mục IV</p>
 
-          <div className="join-form">
-            {!initialRoomCode && (
-              <div className="form-group">
-                <label>Mã phòng</label>
-                <input
-                  className="join-input code-input"
-                  type="text"
-                  value={roomCodeInput}
-                  onChange={(e) =>
-                    setRoomCodeInput(e.target.value.toUpperCase())
-                  }
-                  placeholder="VD: ABC123"
-                  maxLength={6}
-                  autoComplete="off"
-                />
-              </div>
-            )}
+          <label htmlFor="p-code">Mã phòng</label>
+          <input
+            id="p-code"
+            className="field field-code"
+            value={codeInput}
+            onChange={(e) => setCodeInput(cleanRoomCode(e.target.value))}
+            placeholder="6 chữ số"
+            autoComplete="off"
+            inputMode="numeric"
+            pattern="[0-9]*"
+          />
 
-            <div className="form-group">
-              <label>Tên của bạn</label>
-              <input
-                className="join-input"
-                type="text"
-                value={playerName}
-                onChange={(e) => setPlayerName(e.target.value)}
-                placeholder="Nhập tên bạn..."
-                maxLength={20}
-                onKeyDown={(e) => e.key === "Enter" && handleJoin()}
-                autoFocus={!!initialRoomCode}
-              />
-            </div>
+          <label htmlFor="p-name">Tên của bạn</label>
+          <input
+            id="p-name"
+            className="field"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Tên hiện trên bảng xếp hạng"
+            maxLength={20}
+            autoFocus={!!initialRoomCode}
+            autoComplete="off"
+          />
 
-            {error && <div className="join-error">⚠️ {error}</div>}
+          {error && <p className="form-error" role="alert">{error}</p>}
 
-            <button
-              className="join-btn"
-              onClick={handleJoin}
-              disabled={joining || !playerName.trim() || !roomCodeInput.trim()}
-            >
-              {joining ? "Đang vào..." : "Tham gia 🚀"}
-            </button>
-          </div>
-
-          {initialRoomCode && (
-            <div className="room-badge">
-              Phòng: <strong>{initialRoomCode}</strong>
-            </div>
-          )}
-        </div>
+          <button
+            className="btn btn-red btn-block"
+            disabled={joining || !name.trim() || codeInput.length < CODE_LENGTH}
+          >
+            {joining ? "Đang vào phòng…" : "Vào phòng"}
+          </button>
+        </form>
       )}
 
-      {/* ── WAITING ── */}
+      {/* ── CHỜ ── */}
       {phase === "waiting" && (
-        <div className="waiting-screen">
-          <div className="waiting-avatar" style={{ background: "#818cf8" }}>
-            {playerName[0]?.toUpperCase()}
-          </div>
-          <h2 className="waiting-name">
-            Xin chào, <span>{playerName}</span>!
-          </h2>
-          <p className="waiting-room">
-            Phòng: <strong>{roomCode}</strong>
-          </p>
-
-          <div className="waiting-animation">
-            <div className="pulse-ring" />
-            <div className="pulse-ring pulse-ring-2" />
-            <div className="waiting-icon">⏳</div>
-          </div>
-
-          <p className="waiting-text">Chờ host bắt đầu trò chơi...</p>
-          <p className="waiting-hint">Chuẩn bị sẵn sàng nhé! 💪</p>
+        <div className="p-wait">
+          {me && <Avatar player={me} size={84} />}
+          <h1 className="display">{name}</h1>
+          <p>Bạn đã vào phòng <strong>{roomCode}</strong>.</p>
+          <p className="muted">Nhìn lên màn chiếu, trò chơi sẽ bắt đầu ngay.</p>
+          <p className="p-wait-count">{players.length} người đang chờ</p>
+          {error && <p className="form-error">{error}</p>}
         </div>
       )}
 
-      {/* ── QUESTION ── */}
-      {phase === "question" && currentQuestion && (
-        <div className="player-question-screen">
-          {/* Timer bar */}
-          <div className="player-timer-bar">
-            <div
-              className={`player-timer-fill ${timeLeft <= 10 ? "timer-warn" : ""} ${timeLeft <= 5 ? "timer-crit" : ""}`}
-              style={{ width: `${timePercent}%` }}
-            />
+      {/* ── CÂU HỎI ── */}
+      {phase === "question" && q && (
+        <div className="p-q">
+          <div className="p-q-top">
+            <TimerBar timeLeft={timeLeft} total={TIME_LIMIT} />
+            <div className="p-q-meta">
+              <span>
+                Câu {room.currentQuestion + 1}/{quizData.length}
+              </span>
+              <span className={`p-clock ${timeLeft <= 5 ? "is-low" : ""}`}>{timeLeft}s</span>
+            </div>
           </div>
 
-          <div className="pq-header">
-            <span className="pq-num">
-              Câu {(room?.currentQuestion ?? 0) + 1} / {quizData.length}
-            </span>
-            <span
-              className="pq-difficulty"
-              style={{ color: DIFFICULTY_COLOR[currentQuestion.difficulty] }}
-            >
-              {currentQuestion.difficulty === "Dễ"
-                ? "🟢"
-                : currentQuestion.difficulty === "Trung bình"
-                  ? "🟡"
-                  : "🔴"}{" "}
-              {currentQuestion.difficulty}
-            </span>
-            <span
-              className={`pq-timer ${timeLeft <= 5 ? "pq-timer-crit" : ""}`}
-            >
-              ⏱ {timeLeft}s
-            </span>
-          </div>
+          <h2 className="p-q-text">{q.question}</h2>
 
-          <p className="pq-question">{currentQuestion.question}</p>
-
-          {/* Scrambled */}
-          <div className="pq-scrambled-box">
-            <div className="pq-scrambled-label">🔀 Giải mã từ khóa</div>
-            <div className="pq-scrambled">
-              {currentQuestion.scrambled.split(" - ").map((part, pi) => (
-                <span key={pi} className="pq-word-group">
-                  {part.split("").map((ch, ci) => (
-                    <span
-                      key={ci}
-                      className="pq-char"
-                      style={{ animationDelay: `${(pi * 6 + ci) * 0.035}s` }}
-                    >
-                      {ch}
-                    </span>
-                  ))}
-                  {pi < currentQuestion.scrambled.split(" - ").length - 1 && (
-                    <span className="pq-sep">–</span>
-                  )}
-                </span>
+          {submitted ? (
+            <div className="p-sent">
+              <Star size={40} className="p-sent-star" />
+              <p className="p-sent-title">Đã ghi nhận đáp án</p>
+              <p className="p-sent-answer">“{q.type === "choice" ? picked : answer}”</p>
+              <p className="muted">Đáp án sẽ hiện trên màn chiếu.</p>
+            </div>
+          ) : timeLeft === 0 ? (
+            <div className="p-sent">
+              <p className="p-sent-title">Hết giờ</p>
+              <p className="muted">Chờ đáp án trên màn chiếu.</p>
+            </div>
+          ) : q.type === "choice" ? (
+            <div className="p-options">
+              {q.options.map((opt, i) => (
+                <button
+                  key={i}
+                  className="p-option"
+                  onClick={() => {
+                    setPicked(opt);
+                    send(opt);
+                  }}
+                >
+                  <span className="opt-letter">{LETTERS[i]}</span>
+                  <span>{opt}</span>
+                </button>
               ))}
             </div>
-          </div>
-
-          {/* Hint */}
-          {showHint && (
-            <div className="pq-hint">
-              💡 Gợi ý: <strong>{currentQuestion.correct.length}</strong> ký tự,
-              bắt đầu bằng <strong>"{currentQuestion.correct[0]}"</strong>
-            </div>
-          )}
-
-          {/* Answer input */}
-          {!submitted ? (
-            <div className="pq-answer-wrap">
+          ) : (
+            <form
+              className="p-scramble"
+              onSubmit={(e) => {
+                e.preventDefault();
+                send(answer);
+              }}
+            >
+              <Tiles question={q} size="md" hintFirst={usedHint} />
+              <label htmlFor="p-ans" className="sr-only">
+                Đáp án
+              </label>
               <input
-                className="pq-input"
-                type="text"
-                value={userAnswer}
-                onChange={(e) => setUserAnswer(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder="Nhập đáp án..."
-                autoFocus
+                id="p-ans"
+                className="field"
+                value={answer}
+                onChange={(e) => setAnswer(e.target.value)}
+                placeholder="Gõ đáp án (không dấu cũng được)"
                 autoComplete="off"
-                disabled={submitted}
+                autoCapitalize="off"
+                autoFocus
               />
-              <div className="pq-actions">
-                {!showHint && (
+              <div className="p-scramble-actions">
+                {!usedHint && (
                   <button
-                    className="pq-hint-btn"
-                    onClick={() => setShowHint(true)}
+                    type="button"
+                    className="btn btn-ghost"
+                    onClick={() => setUsedHint(true)}
                   >
-                    💡 Gợi ý
+                    Gợi ý (−50% điểm)
                   </button>
                 )}
-                <button
-                  className="pq-submit-btn"
-                  onClick={handleSubmit}
-                  disabled={!userAnswer.trim()}
-                >
-                  Trả lời →
+                <button className="btn btn-red" disabled={!answer.trim()}>
+                  Gửi đáp án
                 </button>
               </div>
-            </div>
-          ) : (
-            <div className="pq-submitted">
-              <div className="submitted-icon">✅</div>
-              <p>
-                Đã nộp: <strong>"{userAnswer}"</strong>
-              </p>
-              <p className="submitted-hint">Chờ host hiện đáp án...</p>
-              {lastResult && (
-                <div
-                  className={`pq-quick-result ${lastResult.isCorrect ? "qr-correct" : "qr-wrong"}`}
-                >
-                  {lastResult.isCorrect ? (
-                    <>
-                      🎉 Chính xác! +<strong>{lastResult.points}</strong> điểm
-                    </>
-                  ) : (
-                    <>😢 Chưa đúng rồi!</>
-                  )}
-                </div>
-              )}
-            </div>
+            </form>
           )}
+          {error && <p className="form-error">{error}</p>}
         </div>
       )}
 
-      {/* ── RESULT (after reveal) ── */}
-      {phase === "result" && currentQuestion && (
-        <div className="player-result-screen">
-          <div
-            className={`result-icon-big ${lastResult?.isCorrect ? "icon-correct" : "icon-wrong"}`}
-          >
-            {lastResult?.isCorrect ? "🎉" : "😢"}
+      {/* ── KẾT QUẢ TỪNG CÂU ── */}
+      {phase === "result" && q && (
+        <div className={`p-result ${result?.isCorrect ? "is-right" : "is-wrong"}`}>
+          <p className="p-result-verdict">
+            {result ? (result.isCorrect ? "Chính xác!" : "Chưa đúng") : "Bạn chưa trả lời"}
+          </p>
+          {result?.isCorrect && (
+            <p className="p-result-points">
+              +{result.points}
+              {result.bonus > 0 && (
+                <span className="p-bonus">
+                  gồm {result.bonus} điểm thưởng 🔥 {result.streak} câu liên tiếp
+                </span>
+              )}
+            </p>
+          )}
+          <div className="p-result-answer">
+            <span className="muted">Đáp án đúng</span>
+            <strong>{q.correct}</strong>
           </div>
-
-          <div className="result-feedback">
-            {lastResult?.isCorrect ? (
-              <h2 className="result-correct-text">Chính xác!</h2>
-            ) : (
-              <h2 className="result-wrong-text">Chưa đúng!</h2>
+          <p className="explain">{q.explain}</p>
+          <div className="p-result-foot">
+            <span>
+              Tổng điểm <strong>{me?.score ?? 0}</strong>
+            </span>
+            {myRank > 0 && (
+              <span>
+                Hạng <strong>{myRank}</strong>/{players.length}
+              </span>
             )}
           </div>
-
-          <div className="result-answer-reveal">
-            <span className="rar-label">Đáp án đúng:</span>
-            <span className="rar-value">{currentQuestion.correct}</span>
-          </div>
-
-          {lastResult && (
-            <div
-              className={`result-points ${lastResult.isCorrect ? "pts-green" : "pts-red"}`}
-            >
-              {lastResult.isCorrect ? `+${lastResult.points} điểm` : "0 điểm"}
-            </div>
-          )}
-
-          <div className="result-total">
-            <span>Tổng điểm của bạn</span>
-            <strong>{totalScore}</strong>
-          </div>
-
-          <p className="result-waiting">⏳ Chờ host chuyển câu tiếp theo...</p>
         </div>
       )}
 
-      {/* ── FINISHED ── */}
+      {/* ── CHUNG CUỘC ── */}
       {phase === "finished" && (
-        <div className="player-final-screen">
-          <div className="final-header">
-            <h1 className="final-title">🏆 Kết Quả Cuối Cùng</h1>
-          </div>
-
-          {/* Podium */}
-          {sortedPlayers.length >= 1 && (
-            <div className="podium">
-              {/* 2nd */}
-              {sortedPlayers[1] && (
-                <div className="podium-slot podium-2">
-                  <div
-                    className="podium-avatar"
-                    style={{ background: sortedPlayers[1].color }}
-                  >
-                    {sortedPlayers[1].name[0].toUpperCase()}
-                  </div>
-                  <div className="podium-name">{sortedPlayers[1].name}</div>
-                  <div className="podium-score">
-                    {sortedPlayers[1].score} điểm
-                  </div>
-                  <div className="podium-bar bar-2">🥈</div>
-                </div>
-              )}
-              {/* 1st */}
-              <div className="podium-slot podium-1">
-                <div className="podium-crown">👑</div>
-                <div
-                  className="podium-avatar avatar-1"
-                  style={{ background: sortedPlayers[0].color }}
-                >
-                  {sortedPlayers[0].name[0].toUpperCase()}
-                </div>
-                <div className="podium-name">{sortedPlayers[0].name}</div>
-                <div className="podium-score">
-                  {sortedPlayers[0].score} điểm
-                </div>
-                <div className="podium-bar bar-1">🥇</div>
-              </div>
-              {/* 3rd */}
-              {sortedPlayers[2] && (
-                <div className="podium-slot podium-3">
-                  <div
-                    className="podium-avatar"
-                    style={{ background: sortedPlayers[2].color }}
-                  >
-                    {sortedPlayers[2].name[0].toUpperCase()}
-                  </div>
-                  <div className="podium-name">{sortedPlayers[2].name}</div>
-                  <div className="podium-score">
-                    {sortedPlayers[2].score} điểm
-                  </div>
-                  <div className="podium-bar bar-3">🥉</div>
-                </div>
-              )}
-            </div>
+        <div className="p-final">
+          <h1 className="display">Chung cuộc</h1>
+          {myRank > 0 && (
+            <p className="p-final-me">
+              Bạn đứng hạng <strong>{myRank}</strong> với <strong>{me?.score ?? 0}</strong> điểm
+            </p>
           )}
-
-          {/* Full ranking */}
-          <div className="final-ranking">
-            {sortedPlayers.slice(3).map((p, i) => (
-              <div
-                key={p.id}
-                className={`final-rank-row ${p.id === playerId ? "row-self" : ""}`}
-                style={{ animationDelay: `${i * 0.08}s` }}
-              >
-                <span className="final-rank-num">#{i + 4}</span>
-                <span
-                  className="final-rank-dot"
-                  style={{ background: p.color }}
-                />
-                <span className="final-rank-name">{p.name}</span>
-                <span className="final-rank-score">{p.score} điểm</span>
-              </div>
-            ))}
-          </div>
-
-          {/* Prize message */}
-          {sortedPlayers[0] && (
-            <div className="prize-banner">
-              🎁 Xin chúc mừng <strong>{sortedPlayers[0].name}</strong> — người
-              chiến thắng xuất sắc nhất! 🎉
-            </div>
-          )}
+          <Podium players={players} selfId={playerId} />
+          <a className="btn btn-ghost" href={window.location.pathname}>
+            Về trang chủ
+          </a>
         </div>
       )}
-    </div>
+    </main>
   );
 }

@@ -1,57 +1,67 @@
-import "./HomePage.css";
+import { useState } from "react";
+import { Star } from "../components/ui";
+import { quizData } from "../data/quizData";
+import { TIME_LIMIT, CODE_LENGTH, cleanRoomCode } from "../firebase/gameService";
 
 export default function HomePage() {
+  const [code, setCode] = useState("");
+
   const goHost = () => {
-    window.location.href = "/?mode=host";
+    window.location.href = `${window.location.pathname}?mode=host`;
+  };
+  const goJoin = (e) => {
+    e.preventDefault();
+    const c = cleanRoomCode(code);
+    if (c.length < CODE_LENGTH) return;
+    window.location.href = `${window.location.pathname}?room=${c}`;
   };
 
   return (
-    <div className="home-page">
-      <div className="home-bg-shapes">
-        <div className="bg-shape bg-1" />
-        <div className="bg-shape bg-2" />
-        <div className="bg-shape bg-3" />
-      </div>
+    <main className="home">
+      <section className="home-poster">
+        <Star size={120} className="home-star" />
+        <p className="home-course">HCM202 · Chương VI, mục IV</p>
+        <h1 className="home-title">
+          <span>Giải mã</span>
+          <span>con chữ</span>
+        </h1>
+        <p className="home-lede">
+          Trò chơi ôn tập: xây dựng văn hóa, đạo đức, con người Việt Nam
+          theo tư tưởng Hồ Chí Minh. {quizData.length} câu, {TIME_LIMIT} giây
+          mỗi câu, trả lời càng nhanh càng nhiều điểm.
+        </p>
+      </section>
 
-      <div className="home-content">
-        <div className="home-hero">
-          <div className="hero-emoji">🏛️</div>
-          <h1 className="hero-title">
-            Trò Chơi
-            <br />
-            <span className="hero-accent">Giải Mã Đáp Án</span>
-          </h1>
+      <section className="home-actions">
+        <form className="home-join" onSubmit={goJoin}>
+          <h2>Vào chơi</h2>
+          <p>Nhập mã phòng đang hiện trên màn chiếu, hoặc quét mã QR.</p>
+          <label htmlFor="home-code" className="sr-only">
+            Mã phòng
+          </label>
+          <input
+            id="home-code"
+            className="field field-code"
+            value={code}
+            onChange={(e) => setCode(cleanRoomCode(e.target.value))}
+            placeholder="6 chữ số"
+            autoComplete="off"
+            inputMode="numeric"
+            pattern="[0-9]*"
+          />
+          <button className="btn btn-red" disabled={code.length < CODE_LENGTH}>
+            Vào phòng
+          </button>
+        </form>
+
+        <div className="home-host">
+          <h2>Người dẫn trò chơi</h2>
+          <p>Mở trên máy chiếu để tạo phòng và hiện mã QR cho cả lớp.</p>
+          <button className="btn btn-ink" onClick={goHost}>
+            Mở phòng mới
+          </button>
         </div>
-
-        <div className="home-cards">
-          {/* Host card */}
-          <div className="mode-card card-host" onClick={goHost}>
-            <div className="card-icon">📺</div>
-            <h2>Tôi là Host</h2>
-            <p>Chiếu lên màn hình, quản lý trò chơi và xem kết quả</p>
-            <div className="card-tag">Dành cho giáo viên</div>
-            <div className="card-arrow">→</div>
-          </div>
-
-          {/* Join card — needs room code */}
-          <div className="mode-card card-join">
-            <div className="card-icon">📱</div>
-            <h2>Tôi là Người chơi</h2>
-            <p>Nhập link hoặc mã phòng mà host chia sẻ để tham gia</p>
-            <div className="join-example">
-              Ví dụ: <code>yourdomain.com/?room=ABC123</code>
-            </div>
-            <div className="card-tag">Dành cho học sinh</div>
-          </div>
-        </div>
-
-        <div className="home-features">
-          <div className="feature">⚡ Real-time</div>
-          <div className="feature">🏆 Bảng xếp hạng</div>
-          <div className="feature">📱 Mobile-friendly</div>
-          <div className="feature">🎉 Confetti & Âm thanh</div>
-        </div>
-      </div>
-    </div>
+      </section>
+    </main>
   );
 }
