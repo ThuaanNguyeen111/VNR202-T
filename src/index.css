@@ -178,19 +178,19 @@ svg { flex-shrink: 0; }
 .home-poster {
   position: relative; overflow: hidden;
   background: var(--red); color: var(--paper-2);
-  padding: clamp(2rem, 6vw, 5rem);
-  display: flex; flex-direction: column; justify-content: flex-end; gap: 1.2rem;
+  padding: clamp(2rem, 6vw, 5rem) clamp(3rem, 14%, 9rem) clamp(2rem, 6vw, 5rem) clamp(2rem, 6vw, 5rem);
+  display: flex; flex-direction: column; justify-content: center; gap: 1.1rem;
   clip-path: polygon(0 0, 100% 0, 88% 100%, 0 100%);
 }
-.home-star { position: absolute; top: 2.5rem; right: 20%; color: var(--gold); }
-.home-course { font-weight: 700; opacity: 0.9; }
+.home-star { color: var(--gold); width: clamp(64px, 7vw, 104px); height: auto; margin-bottom: 0.25rem; }
+.home-course { font-weight: 700; font-size: 1.1rem; opacity: 0.95; }
 .home-title {
   font-family: var(--display); font-weight: 400; text-transform: uppercase;
-  font-size: clamp(4rem, 10vw, 8.5rem); line-height: 1.08; margin-top: 0.5rem;
+  font-size: clamp(4rem, 9vw, 8.5rem); line-height: 1.08; padding-top: 0.14em;
   display: flex; flex-direction: column;
 }
 .home-title span:last-child { color: var(--gold); }
-.home-lede { max-width: 32rem; font-size: 1.05rem; }
+.home-lede { max-width: 34rem; font-size: 1.1rem; }
 .home-actions {
   padding: clamp(2rem, 5vw, 4rem); display: grid; align-content: center; gap: 2rem;
 }
@@ -456,8 +456,8 @@ svg { flex-shrink: 0; }
 /* ── Màn hình hẹp ─────────────────────────────────────────────────────── */
 @media (max-width: 900px) {
   .home, .lobby, .stage-body, .reveal { grid-template-columns: 1fr; }
-  .home-poster { clip-path: none; min-height: 55vh; }
-  .home-star { top: 1rem; right: 1rem; width: 56px; height: 56px; }
+  .home-poster { clip-path: none; min-height: auto; padding: 2rem 1.25rem; }
+  .home-star { width: 56px; }
   .stage-main, .reveal-main { padding: 1.5rem; }
   .lobby-players { padding: 1.5rem 1.25rem 6rem; }
   .options-board { grid-template-columns: 1fr; }
